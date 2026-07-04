@@ -132,7 +132,7 @@ func InitialSettings() []model.SettingItem {
 		//{Key: conf.OfficeTypes, Value: "doc,docx,xls,xlsx,ppt,pptx", Type: conf.TypeText, Group: model.PREVIEW, Flag: model.PRIVATE},
 		{Key: conf.ProxyTypes, Value: "m3u8,url", Type: conf.TypeText, Group: model.PREVIEW, Flag: model.PRIVATE},
 		{Key: conf.ProxyIgnoreHeaders, Value: "authorization,referer", Type: conf.TypeText, Group: model.PREVIEW, Flag: model.PRIVATE},
-		{Key: "external_previews", Value: `{}`, Type: conf.TypeText, Group: model.PREVIEW},
+		{Key: "external_previews", Value: `{"mp4,mkv,avi,mov,rmvb,webm,flv,m3u8":{"mpv":"mpv://$durl"}}`, Type: conf.TypeText, Group: model.PREVIEW},
 		{Key: "iframe_previews", Value: `{
 	"doc,docx,xls,xlsx,ppt,pptx": {
 		"Microsoft":"https://view.officeapps.live.com/op/view.aspx?src=$e_url",

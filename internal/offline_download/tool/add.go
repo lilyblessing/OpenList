@@ -253,6 +253,8 @@ func NativeToolName(storage driver.Driver) string {
 		return "GuangYaPan"
 	case *pikpak.PikPak:
 		return "PikPak"
+	case *pikpak_pat.PikPak: // pikpak_pat
+		return "PikPakPAT"
 	case *thunder.Thunder:
 		return "Thunder"
 	case *thunderx.ThunderX:

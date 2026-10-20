@@ -30,13 +30,10 @@ jobs:
     strategy:
       matrix:
         target:
-          - darwin-amd64
-          - darwin-arm64
+          # Fork-only build: Windows x64 is the only distributed target.
+          # darwin/linux-android/arm64 targets were dropped because cross-compiling
+          # arm64 targets requires zig, installed via snap, which times out on CI.
           - windows-amd64
-          - linux-arm64-musl
-          - linux-amd64-musl
-          - windows-arm64
-          - android-arm64
     name: Build ${{ matrix.target }}
     runs-on: ubuntu-latest
     steps:

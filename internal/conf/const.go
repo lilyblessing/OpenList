@@ -96,6 +96,9 @@ const (
 	// pikpak
 	PikPakTempDir = "pikpak_temp_dir"
 
+	// pikpak_pat
+	PikPakPATTempDir = "pikpak_pat_temp_dir"
+
 	// thunder
 	ThunderTempDir = "thunder_temp_dir"
 

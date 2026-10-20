@@ -228,6 +228,28 @@ func SetPikPak(c *gin.Context) {
 	common.SuccessResp(c, "ok")
 }
 
+type SetPikPakPATReq struct {
+	TempDir string `json:"temp_dir" form:"temp_dir"`
+}
+
+func SetPikPakPAT(c *gin.Context) {
+	var req SetPikPakPATReq
+	if err := c.ShouldBind(&req); err != nil {
+		common.ErrorResp(c, err, 400)
+		return
+	}
+	if !validateOfflineDownloadStorage(c, req.TempDir, "PikPakPAT") {
+		return
+	}
+	items := []model.SettingItem{
+		{Key: conf.PikPakPATTempDir, Value: req.TempDir, Type: conf.TypeString, Group: model.OFFLINE_DOWNLOAD, Flag: model.PRIVATE},
+	}
+	if _, ok := saveAndInitOfflineDownloadTool(c, "PikPakPAT", items); !ok {
+		return
+	}
+	common.SuccessResp(c, "ok")
+}
+
 type SetThunderReq struct {
 	TempDir string `json:"temp_dir" form:"temp_dir"`
 }

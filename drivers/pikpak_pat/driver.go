@@ -1,0 +1,237 @@
+package pikpak_pat
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/OpenListTeam/OpenList/v4/drivers/base"
+	"github.com/OpenListTeam/OpenList/v4/internal/driver"
+	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	"github.com/OpenListTeam/OpenList/v4/internal/op"
+	streamPkg "github.com/OpenListTeam/OpenList/v4/internal/stream"
+	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
+	hash_extend "github.com/OpenListTeam/OpenList/v4/pkg/utils/hash"
+	"github.com/go-resty/resty/v2"
+	log "github.com/sirupsen/logrus"
+)
+
+// PikPak PAT 驱动。
+// Addition 中的 RootFolderID（root_folder_id）留空 = 根目录，不要填 root。
+type PikPak struct {
+	model.Storage
+	Addition
+	AccessToken string
+}
+
+func (d *PikPak) Config() driver.Config {
+	return config
+}
+
+func (d *PikPak) GetAddition() driver.Additional {
+	return &d.Addition
+}
+
+func (d *PikPak) Init(ctx context.Context) (err error) {
+	// 1. PAT 不能为空
+	d.AccessToken = d.Addition.AccessToken
+	if d.AccessToken == "" {
+		return fmt.Errorf("PikPak PAT 不能为空")
+	}
+	// 2. 根文件夹 ID 留空即为根目录，不允许填 root / / / *
+	switch d.RootFolderID {
+	case "root", "/", "*":
+		return fmt.Errorf("根文件夹 ID 请留空，不要填 root")
+	}
+	// 3. 解析 JWT 过期时间：解得开且已过期则拒绝；剩余不足 7 天仅告警；解不开则继续
+	if exp, ok := tokenExpiry(d.AccessToken); ok {
+		if time.Now().After(exp) {
+			return fmt.Errorf("PikPak PAT 已过期，请重新生成")
+		}
+		if remaining := time.Until(exp); remaining < 7*24*time.Hour {
+			utils.Log.Warnf("PikPak PAT 将于 %s 过期（剩余不足 7 天），请及时重新生成", exp.Format(time.RFC3339))
+		}
+	}
+	// 4. 通过 GetDetails 验证令牌真实有效
+	if _, err = d.GetDetails(ctx); err != nil {
+		return err
+	}
+	// 5. 保存驱动配置
+	op.MustSaveDriverStorage(d)
+	return nil
+}
+
+func (d *PikPak) Drop(ctx context.Context) error {
+	return nil
+}
+
+func (d *PikPak) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
+	files, err := d.getFiles(dir.GetID())
+	if err != nil {
+		return nil, err
+	}
+	return utils.SliceConvert(files, func(src File) (model.Obj, error) {
+		return fileToObj(src), nil
+	})
+}
+
+func (d *PikPak) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+	var resp File
+	var url string
+	queryParams := map[string]string{
+		"_magic":         "2021",
+		"usage":          "FETCH",
+		"thumbnail_size": "SIZE_LARGE",
+	}
+	if !d.DisableMediaLink {
+		queryParams["usage"] = "CACHE"
+	}
+	_, err := d.request(fmt.Sprintf("https://api-drive.mypikpak.net/drive/v1/files/%s", file.GetID()),
+		http.MethodGet, func(req *resty.Request) {
+			req.SetContext(ctx).
+				SetQueryParams(queryParams)
+		}, &resp)
+	if err != nil {
+		return nil, err
+	}
+	url = resp.WebContentLink
+
+	if !d.DisableMediaLink && len(resp.Medias) > 0 && resp.Medias[0].Link.Url != "" {
+		log.Debugln("use media link")
+		url = resp.Medias[0].Link.Url
+	}
+
+	return &model.Link{
+		URL: url,
+	}, nil
+}
+
+func (d *PikPak) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {
+	_, err := d.request("https://api-drive.mypikpak.net/drive/v1/files", http.MethodPost, func(req *resty.Request) {
+		req.SetContext(ctx).SetBody(base.Json{
+			"kind":      "drive#folder",
+			"parent_id": parentDir.GetID(),
+			"name":      dirName,
+		})
+	}, nil)
+	return err
+}
+
+func (d *PikPak) Move(ctx context.Context, srcObj, dstDir model.Obj) error {
+	_, err := d.request("https://api-drive.mypikpak.net/drive/v1/files:batchMove", http.MethodPost, func(req *resty.Request) {
+		req.SetContext(ctx).SetBody(base.Json{
+			"ids": []string{srcObj.GetID()},
+			"to": base.Json{
+				"parent_id": dstDir.GetID(),
+			},
+		})
+	}, nil)
+	return err
+}
+
+func (d *PikPak) Rename(ctx context.Context, srcObj model.Obj, newName string) error {
+	_, err := d.request("https://api-drive.mypikpak.net/drive/v1/files/"+srcObj.GetID(), http.MethodPatch, func(req *resty.Request) {
+		req.SetContext(ctx).SetBody(base.Json{
+			"name": newName,
+		})
+	}, nil)
+	return err
+}
+
+func (d *PikPak) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
+	_, err := d.request("https://api-drive.mypikpak.net/drive/v1/files:batchCopy", http.MethodPost, func(req *resty.Request) {
+		req.SetContext(ctx).SetBody(base.Json{
+			"ids": []string{srcObj.GetID()},
+			"to": base.Json{
+				"parent_id": dstDir.GetID(),
+			},
+		})
+	}, nil)
+	return err
+}
+
+// Remove 仅将文件移入回收站（files:batchTrash），绝不调用 files:batchDelete 做永久删除。
+func (d *PikPak) Remove(ctx context.Context, obj model.Obj) error {
+	_, err := d.request("https://api-drive.mypikpak.net/drive/v1/files:batchTrash", http.MethodPost, func(req *resty.Request) {
+		req.SetContext(ctx).SetBody(base.Json{
+			"ids": []string{obj.GetID()},
+		})
+	}, nil)
+	return err
+}
+
+func (d *PikPak) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
+	sha1Str := stream.GetHash().GetHash(hash_extend.GCID)
+
+	if len(sha1Str) < hash_extend.GCID.Width {
+		var err error
+		_, sha1Str, err = streamPkg.CacheFullAndHash(stream, &up, hash_extend.GCID, stream.GetSize())
+		if err != nil {
+			return err
+		}
+	}
+
+	var resp UploadTaskData
+	res, err := d.request("https://api-drive.mypikpak.net/drive/v1/files", http.MethodPost, func(req *resty.Request) {
+		req.SetBody(base.Json{
+			"kind":        "drive#file",
+			"name":        stream.GetName(),
+			"size":        stream.GetSize(),
+			"hash":        strings.ToUpper(sha1Str),
+			"upload_type": "UPLOAD_TYPE_RESUMABLE",
+			"objProvider": base.Json{"provider": "UPLOAD_TYPE_UNKNOWN"},
+			"parent_id":   dstDir.GetID(),
+			"folder_type": "NORMAL",
+		})
+	}, &resp)
+	if err != nil {
+		return err
+	}
+
+	// 秒传成功
+	if resp.Resumable == nil {
+		log.Debugln(string(res))
+		return nil
+	}
+
+	params := resp.Resumable.Params
+
+	if stream.GetSize() <= 10*utils.MB { // 文件大小 小于10MB，改用普通模式上传
+		return d.UploadByOSS(ctx, &params, stream, up)
+	}
+	// 分片上传
+	return d.UploadByMultipart(ctx, &params, stream.GetSize(), stream, up)
+}
+
+func (d *PikPak) GetDetails(ctx context.Context) (*model.StorageDetails, error) {
+	var about AboutResponse
+	_, err := d.request("https://api-drive.mypikpak.com/drive/v1/about", http.MethodGet, func(req *resty.Request) {
+		req.SetContext(ctx)
+	}, &about)
+	if err != nil {
+		return nil, err
+	}
+	// 配额解析失败不应导致挂载失败：部分账号（不限容量等）可能返回非数字。
+	// 解析不出来时按 0 处理，只在日志里告警。
+	total, err := strconv.ParseInt(about.Quota.Limit, 10, 64)
+	if err != nil {
+		utils.Log.Warnf("PikPak 配额 total 解析失败（原始值 %q），按 0 处理: %v", about.Quota.Limit, err)
+		total = 0
+	}
+	used, err := strconv.ParseInt(about.Quota.Usage, 10, 64)
+	if err != nil {
+		utils.Log.Warnf("PikPak 配额 usage 解析失败（原始值 %q），按 0 处理: %v", about.Quota.Usage, err)
+		used = 0
+	}
+	return &model.StorageDetails{
+		DiskUsage: model.DiskUsage{
+			TotalSpace: total,
+			UsedSpace:  used,
+		},
+	}, nil
+}
+
+var _ driver.Driver = (*PikPak)(nil)

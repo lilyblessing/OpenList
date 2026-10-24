@@ -231,7 +231,7 @@ func isEd2kURL(urlStr string) bool {
 func ed2kToolForStorage(storage driver.Driver) string {
 	name := NativeToolName(storage)
 	switch name {
-	case "115 Cloud", "115 Open":
+	case "115 Cloud", "115 Open", "PikPakPAT": // pikpak_pat
 		return name
 	default:
 		return ""
@@ -267,7 +267,7 @@ func NativeToolName(storage driver.Driver) string {
 }
 
 // ed2kCapableTools 支持 ed2k 协议的工具列表
-var ed2kCapableTools = []string{"115 Cloud", "115 Open", "Thunder", "ThunderX", "ThunderBrowser"}
+var ed2kCapableTools = []string{"115 Cloud", "115 Open", "PikPakPAT", "Thunder", "ThunderX", "ThunderBrowser"} // pikpak_pat
 
 // ed2kFallbackTools 是当前可用于自动接管 ed2k 任务的工具列表。
 var ed2kFallbackTools = []string{"Thunder", "ThunderX", "ThunderBrowser"}

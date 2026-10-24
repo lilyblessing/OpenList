@@ -54,16 +54,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FRONTEND_REPO: ${{ vars.FRONTEND_REPO }}
 
-      # Fork 自定义前端构建已停用。
-      # 原因：OpenList v4.2.8 起官方前端包含媒体库与高级种子传输页面，
-      # 这些页面的源码不在 OpenList-Frontend 的公开分支上，无法从源码重建；
-      # 上面的 Setup web 步骤（bash build.sh dev web）已自动下载官方完整 dist，
-      # 若保留本步骤会用缺失 media 的 fork 产物覆盖它。
-      # 如需重新启用，必须先解决 media 源码来源问题。
-      - name: Build frontend from source (disabled - official dist is used)
-        if: false
+      # Fork 自定义前端构建：取代 Setup web 下载的官方 dist。
+      # 上游 OpenList-Frontend 的 test/only-mpv 已 rebase 到 v4.2.8（含 media 前端源码），
+      # 因此这里构建的产物同时包含官方媒体库/高级种子传输页面 + 本 fork 的两处补丁：
+      #   1. zh-CN / zh-TW 中文语言文件（上游不入库，靠 Crowdin secret 生成，fork 没有该 secret）
+      #   2. 设置页的 PikPak PAT 离线下载临时目录入口
+      - name: Build frontend from source (test branch with forked repo)
+        if: ${{ github.repository == 'lilyblessing/OpenList' }}
         run: |
-          echo 'Fork frontend build is disabled; using official dist from Setup web.'
+          git clone --branch test/only-mpv --depth 1 https://github.com/lilyblessing/OpenList-Frontend.git frontend-src
+          cd frontend-src
+          npm install -g pnpm
+          pnpm install
+          pnpm build
+          cd ..
+          rm -rf public/dist
+          mkdir -p public/dist
+          cp -r frontend-src/dist/* public/dist/
+          rm -rf frontend-src
 
       - name: Build
         uses: OpenListTeam/cgo-actions@d760a8ec1a6be1f8ec181229e11cb2671797f9e0 # v1.3.0

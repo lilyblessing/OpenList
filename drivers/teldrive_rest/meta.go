@@ -16,7 +16,10 @@ var config = driver.Config{
 	DefaultRoot: "",
 	LocalSort:   true,
 	CheckStatus: true,
-	Alert:       "info|TeleDrive 通过私有 REST API 接入。文件名唯一性由使用方自行保证（服务端无唯一约束，同目录可重名）。单文件上限受 Telegram 限制：2 GB（免费）/ 4 GB（Premium）。",
+	// teledrive 用 Cookie 鉴权，直链（302）无法把 Cookie 交给客户端，必然 401；
+	// 必须强制走 OpenList 代理，由服务端带上 Cookie 转发。实测 /p/ 代理下 Range 正常（206）。
+	OnlyProxy: true,
+	Alert:     "info|TeleDrive 通过私有 REST API 接入。文件名唯一性由使用方自行保证（服务端无唯一约束，同目录可重名）。单文件上限受 Telegram 限制：2 GB（免费）/ 4 GB（Premium）。",
 }
 
 func init() {

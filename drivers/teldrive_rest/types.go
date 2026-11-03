@@ -56,3 +56,12 @@ func fileToObj(f File) *model.Object {
 		IsFolder: false,
 	}
 }
+
+// UploadInitResp 是 POST /api/upload/init 的响应。
+// 注意 ChunkSize 是 HTTP 分块大小（5 MB），TotalParts 是 MTProto 内部分包数（ceil(size/512KB)），
+// 两者含义不同：HTTP 分块总数必须用 ceil(size / ChunkSize) 计算，不能用 TotalParts。
+type UploadInitResp struct {
+	ID         string `json:"id"`
+	ChunkSize  int64  `json:"chunk_size"`
+	TotalParts int    `json:"total_parts"`
+}

@@ -3,6 +3,7 @@ package teldrive_rest
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -107,13 +108,81 @@ func (d *TeleDriveREST) Link(ctx context.Context, file model.Obj, args model.Lin
 	}, nil
 }
 
-func (d *TeleDriveREST) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error { return errs.NotSupport }
-func (d *TeleDriveREST) Move(ctx context.Context, srcObj, dstDir model.Obj) error               { return errs.NotSupport }
-func (d *TeleDriveREST) Rename(ctx context.Context, srcObj model.Obj, newName string) error     { return errs.NotSupport }
-func (d *TeleDriveREST) Copy(ctx context.Context, srcObj, dstDir model.Obj) error               { return errs.NotSupport }
-func (d *TeleDriveREST) Remove(ctx context.Context, obj model.Obj) error                        { return errs.NotSupport }
+func (d *TeleDriveREST) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {
+	// parentDir.GetID() 为空串时即根目录，服务端把空 parent_id 当根
+	return d.createFolder(ctx, dirName, parentDir.GetID())
+}
+func (d *TeleDriveREST) Move(ctx context.Context, srcObj, dstDir model.Obj) error           { return errs.NotSupport }
+func (d *TeleDriveREST) Rename(ctx context.Context, srcObj model.Obj, newName string) error { return errs.NotSupport }
+func (d *TeleDriveREST) Copy(ctx context.Context, srcObj, dstDir model.Obj) error           { return errs.NotSupport }
+func (d *TeleDriveREST) Remove(ctx context.Context, obj model.Obj) error                    { return errs.NotSupport }
+
 func (d *TeleDriveREST) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
-	return errs.NotSupport
+	name := stream.GetName()
+	size := stream.GetSize()
+	mime := stream.GetMimetype()
+	fid := dstDir.GetID() // "" = 根
+
+	// 服务端要求 size > 0，否则 400 invalid upload init payload
+	if size <= 0 {
+		return fmt.Errorf("TeleDrive 上传要求文件大小大于 0（实际 %d）", size)
+	}
+
+	// 覆盖模式：先软删同名旧文件（进回收站）
+	if d.Addition.Overwrite {
+		old, err := d.listFilesByName(ctx, fid, name)
+		if err != nil {
+			return err
+		}
+		for _, f := range old {
+			if err := d.deleteFile(ctx, f.ID); err != nil {
+				return err
+			}
+		}
+	}
+
+	init, err := d.uploadInit(ctx, name, size, mime, fid)
+	if err != nil {
+		return err
+	}
+
+	chunkSize := init.ChunkSize
+	// ★ HTTP 分块数 = ceil(size / chunk_size)。
+	// 不要用 init.TotalParts：那是 MTProto 内部分包数（ceil(size/512KB)），
+	// 比HTTP 分块数大得多，误用会导致服务端静默丢弃多余分块。
+	if chunkSize <= 0 {
+		return fmt.Errorf("TeleDrive 返回非法 chunk_size: %d", chunkSize)
+	}
+	totalChunks := (size + chunkSize - 1) / chunkSize
+
+	for i := 0; i < int(totalChunks); i++ {
+		// 本块应有的大小（最后一块可能不满）
+		want := chunkSize
+		if remain := size - int64(i)*chunkSize; remain < want {
+			want = remain
+		}
+		buf := make([]byte, want)
+		if _, err := io.ReadFull(stream, buf); err != nil {
+			return fmt.Errorf("读取第 %d 块失败（共 %d 块）: %w", i, totalChunks, err)
+		}
+		// 服务端对同一 chunk_index 重复上传是幂等的（按索引覆盖），可安全重试
+		var uploadErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			uploadErr = d.uploadChunk(ctx, init.ID, i, buf)
+			if uploadErr == nil {
+				break
+			}
+		}
+		if uploadErr != nil {
+			return fmt.Errorf("上传第 %d 块失败（共 %d 块）: %w", i, totalChunks, uploadErr)
+		}
+		if up != nil {
+			up(float64(i+1) / float64(totalChunks) * 100)
+		}
+	}
+
+	_, err = d.uploadComplete(ctx, init.ID)
+	return err
 }
 
 var _ driver.Driver = (*TeleDriveREST)(nil)

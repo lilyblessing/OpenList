@@ -9,6 +9,7 @@ type Addition struct {
 	driver.RootID
 	Address  string `json:"address" required:"true" default:"http://127.0.0.1:8080" help:"TeleDrive 服务地址，如 http://127.0.0.1:8080"`
 	Password string `json:"password" required:"true" help:"TeleDrive 管理密码（对应 TELEDRIVE_ADMIN_PASSWORD）"`
+	Overwrite bool `json:"overwrite" default:"false" help:"开启后上传同名文件会先删除旧文件再上传（服务端没有唯一约束，默认会产生重名副本）"`
 }
 
 var config = driver.Config{

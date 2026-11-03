@@ -153,7 +153,7 @@ func (d *TeleDriveREST) Put(ctx context.Context, dstDir model.Obj, stream model.
 	if chunkSize <= 0 {
 		return fmt.Errorf("TeleDrive 返回非法 chunk_size: %d", chunkSize)
 	}
-	totalChunks := (size + chunkSize - 1) / chunkSize
+	totalChunks := chunkCount(size, chunkSize)
 
 	for i := 0; i < int(totalChunks); i++ {
 		// 本块应有的大小（最后一块可能不满）

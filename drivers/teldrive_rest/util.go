@@ -349,3 +349,12 @@ func (d *TeleDriveREST) listFilesByName(ctx context.Context, folderID, name stri
 	}
 	return matched, nil
 }
+
+// chunkCount 返回 HTTP 分块总数。
+// 必须用 chunkSize（5 MB）计算，不能用服务端返回的 total_parts（那是 MTProto 分包数，ceil(size/512KB)）。
+func chunkCount(size, chunkSize int64) int64 {
+	if chunkSize <= 0 || size <= 0 {
+		return 0
+	}
+	return (size + chunkSize - 1) / chunkSize
+}

@@ -112,10 +112,39 @@ func (d *TeleDriveREST) MakeDir(ctx context.Context, parentDir model.Obj, dirNam
 	// parentDir.GetID() 为空串时即根目录，服务端把空 parent_id 当根
 	return d.createFolder(ctx, dirName, parentDir.GetID())
 }
-func (d *TeleDriveREST) Move(ctx context.Context, srcObj, dstDir model.Obj) error           { return errs.NotSupport }
-func (d *TeleDriveREST) Rename(ctx context.Context, srcObj model.Obj, newName string) error { return errs.NotSupport }
-func (d *TeleDriveREST) Copy(ctx context.Context, srcObj, dstDir model.Obj) error           { return errs.NotSupport }
-func (d *TeleDriveREST) Remove(ctx context.Context, obj model.Obj) error                    { return errs.NotSupport }
+func (d *TeleDriveREST) Move(ctx context.Context, srcObj, dstDir model.Obj) error {
+	dst := dstDir.GetID()
+	if dst == "" {
+		// 目标为空 ID 即根目录。
+		// 注意：PUT /api/files/{id} 的 folder_id 传 null 会被服务端当作「不修改」，
+		// 所以移到根必须走 POST /api/batch/move（其 target_folder_id 为 null 时服务端当作根）。
+		if srcObj.IsDir() {
+			return d.batchMove(ctx, nil, []string{srcObj.GetID()}, "")
+		}
+		return d.batchMove(ctx, []string{srcObj.GetID()}, nil, "")
+	}
+	if srcObj.IsDir() {
+		return d.moveFolder(ctx, srcObj.GetID(), dst)
+	}
+	return d.moveFile(ctx, srcObj.GetID(), dst)
+}
+
+func (d *TeleDriveREST) Rename(ctx context.Context, srcObj model.Obj, newName string) error {
+	if srcObj.IsDir() {
+		return d.renameFolder(ctx, srcObj.GetID(), newName)
+	}
+	return d.renameFile(ctx, srcObj.GetID(), newName)
+}
+
+func (d *TeleDriveREST) Copy(ctx context.Context, srcObj, dstDir model.Obj) error { return errs.NotSupport }
+
+// Remove 是软删（进 teledrive 虚拟回收站），数据可恢复。
+func (d *TeleDriveREST) Remove(ctx context.Context, obj model.Obj) error {
+	if obj.IsDir() {
+		return d.deleteFolder(ctx, obj.GetID())
+	}
+	return d.deleteFile(ctx, obj.GetID())
+}
 
 func (d *TeleDriveREST) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
 	name := stream.GetName()

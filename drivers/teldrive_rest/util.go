@@ -370,3 +370,250 @@ func chunkCount(size, chunkSize int64) int64 {
 	}
 	return (size + chunkSize - 1) / chunkSize
 }
+
+// renameFile 改文件名。newName 为空返回 error（服务端会静默忽略空名，驱动侧必须主动拒绝）。
+// 重试策略同 listFolders：401 清会话重登一次后重试，只重试一次。
+func (d *TeleDriveREST) renameFile(ctx context.Context, id, newName string) error {
+	if newName == "" {
+		return fmt.Errorf("文件名不能为空")
+	}
+	retried := false
+	for {
+		if err := d.ensureCookie(ctx); err != nil {
+			return err
+		}
+		d.mu.RLock()
+		token := d.session
+		d.mu.RUnlock()
+		resp, err := d.client.R().
+			SetContext(ctx).
+			SetHeader("Cookie", sessionCookieName+"="+token).
+			SetHeader("Content-Type", "application/json").
+			SetBody(map[string]interface{}{"name": newName}).
+			Put("/api/files/" + id)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode() == http.StatusUnauthorized {
+			if retried {
+				return fmt.Errorf("TeleDrive /api/files 鉴权失败（401），重新登录后仍然无效")
+			}
+			retried = true
+			d.mu.Lock()
+			d.session = ""
+			d.mu.Unlock()
+			continue
+		}
+		if resp.StatusCode() < 200 || resp.StatusCode() > 299 {
+			return fmt.Errorf("TeleDrive PUT /api/files/%s 返回 HTTP %d: %s", id, resp.StatusCode(), resp.String())
+		}
+		return nil
+	}
+}
+
+// renameFolder 改目录名。newName 为空返回 error。
+// 重试策略同 listFolders：401 清会话重登一次后重试，只重试一次。
+func (d *TeleDriveREST) renameFolder(ctx context.Context, id, newName string) error {
+	if newName == "" {
+		return fmt.Errorf("目录名不能为空")
+	}
+	retried := false
+	for {
+		if err := d.ensureCookie(ctx); err != nil {
+			return err
+		}
+		d.mu.RLock()
+		token := d.session
+		d.mu.RUnlock()
+		resp, err := d.client.R().
+			SetContext(ctx).
+			SetHeader("Cookie", sessionCookieName+"="+token).
+			SetHeader("Content-Type", "application/json").
+			SetBody(map[string]interface{}{"name": newName}).
+			Put("/api/folders/" + id)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode() == http.StatusUnauthorized {
+			if retried {
+				return fmt.Errorf("TeleDrive /api/folders 鉴权失败（401），重新登录后仍然无效")
+			}
+			retried = true
+			d.mu.Lock()
+			d.session = ""
+			d.mu.Unlock()
+			continue
+		}
+		if resp.StatusCode() < 200 || resp.StatusCode() > 299 {
+			return fmt.Errorf("TeleDrive PUT /api/folders/%s 返回 HTTP %d: %s", id, resp.StatusCode(), resp.String())
+		}
+		return nil
+	}
+}
+
+// moveFile 把文件移到 dstFolderID（非根）。dstFolderID 为空串返回 error：
+// 服务端 folder_id 是 *string，JSON null 表示「不修改」而非「移到根」，移到根必须走 batchMove。
+// 重试策略同 listFolders：401 清会话重登一次后重试，只重试一次。
+func (d *TeleDriveREST) moveFile(ctx context.Context, id, dstFolderID string) error {
+	if dstFolderID == "" {
+		return fmt.Errorf("目标目录 ID 不能为空：移到根请用 batchMove")
+	}
+	retried := false
+	for {
+		if err := d.ensureCookie(ctx); err != nil {
+			return err
+		}
+		d.mu.RLock()
+		token := d.session
+		d.mu.RUnlock()
+		resp, err := d.client.R().
+			SetContext(ctx).
+			SetHeader("Cookie", sessionCookieName+"="+token).
+			SetHeader("Content-Type", "application/json").
+			SetBody(map[string]interface{}{"folder_id": dstFolderID}).
+			Put("/api/files/" + id)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode() == http.StatusUnauthorized {
+			if retried {
+				return fmt.Errorf("TeleDrive /api/files 鉴权失败（401），重新登录后仍然无效")
+			}
+			retried = true
+			d.mu.Lock()
+			d.session = ""
+			d.mu.Unlock()
+			continue
+		}
+		if resp.StatusCode() < 200 || resp.StatusCode() > 299 {
+			return fmt.Errorf("TeleDrive PUT /api/files/%s 返回 HTTP %d: %s", id, resp.StatusCode(), resp.String())
+		}
+		return nil
+	}
+}
+
+// moveFolder 把目录移到 dstParentID（非根）。dstParentID 为空串返回 error：
+// 服务端 parent_id 是 *string，JSON null 表示「不修改」而非「移到根」，移到根必须走 batchMove。
+// 服务端有防环检查：移到自身或自身子孙会返回 500。
+// 重试策略同 listFolders：401 清会话重登一次后重试，只重试一次。
+func (d *TeleDriveREST) moveFolder(ctx context.Context, id, dstParentID string) error {
+	if dstParentID == "" {
+		return fmt.Errorf("目标父目录 ID 不能为空：移到根请用 batchMove")
+	}
+	retried := false
+	for {
+		if err := d.ensureCookie(ctx); err != nil {
+			return err
+		}
+		d.mu.RLock()
+		token := d.session
+		d.mu.RUnlock()
+		resp, err := d.client.R().
+			SetContext(ctx).
+			SetHeader("Cookie", sessionCookieName+"="+token).
+			SetHeader("Content-Type", "application/json").
+			SetBody(map[string]interface{}{"parent_id": dstParentID}).
+			Put("/api/folders/" + id)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode() == http.StatusUnauthorized {
+			if retried {
+				return fmt.Errorf("TeleDrive /api/folders 鉴权失败（401），重新登录后仍然无效")
+			}
+			retried = true
+			d.mu.Lock()
+			d.session = ""
+			d.mu.Unlock()
+			continue
+		}
+		if resp.StatusCode() < 200 || resp.StatusCode() > 299 {
+			return fmt.Errorf("TeleDrive PUT /api/folders/%s 返回 HTTP %d: %s", id, resp.StatusCode(), resp.String())
+		}
+		return nil
+	}
+}
+
+// batchMove 批量移动。targetFolderID 为空串表示移到根（发 JSON null，照抄 createFolder 的 any + nil 技巧）。
+// fileIDs / folderIDs 传 nil 或空切片表示该类不移动（对应字段不进请求体）。
+// 成功返回 200 空体。重试策略同 listFolders：401 清会话重登一次后重试，只重试一次。
+func (d *TeleDriveREST) batchMove(ctx context.Context, fileIDs, folderIDs []string, targetFolderID string) error {
+	var target any
+	if targetFolderID != "" {
+		target = targetFolderID
+	}
+	body := map[string]interface{}{"target_folder_id": target}
+	if len(fileIDs) > 0 {
+		body["file_ids"] = fileIDs
+	}
+	if len(folderIDs) > 0 {
+		body["folder_ids"] = folderIDs
+	}
+	retried := false
+	for {
+		if err := d.ensureCookie(ctx); err != nil {
+			return err
+		}
+		d.mu.RLock()
+		token := d.session
+		d.mu.RUnlock()
+		resp, err := d.client.R().
+			SetContext(ctx).
+			SetHeader("Cookie", sessionCookieName+"="+token).
+			SetHeader("Content-Type", "application/json").
+			SetBody(body).
+			Post("/api/batch/move")
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode() == http.StatusUnauthorized {
+			if retried {
+				return fmt.Errorf("TeleDrive /api/batch/move 鉴权失败（401），重新登录后仍然无效")
+			}
+			retried = true
+			d.mu.Lock()
+			d.session = ""
+			d.mu.Unlock()
+			continue
+		}
+		if resp.StatusCode() < 200 || resp.StatusCode() > 299 {
+			return fmt.Errorf("TeleDrive POST /api/batch/move 返回 HTTP %d: %s", resp.StatusCode(), resp.String())
+		}
+		return nil
+	}
+}
+
+// deleteFolder 删除目录（服务端是软删，进回收站）。
+// 重试策略同 deleteFile：401 清会话重登一次后重试，只重试一次。
+func (d *TeleDriveREST) deleteFolder(ctx context.Context, id string) error {
+	retried := false
+	for {
+		if err := d.ensureCookie(ctx); err != nil {
+			return err
+		}
+		d.mu.RLock()
+		token := d.session
+		d.mu.RUnlock()
+		resp, err := d.client.R().
+			SetContext(ctx).
+			SetHeader("Cookie", sessionCookieName+"="+token).
+			Delete("/api/folders/" + id)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode() == http.StatusUnauthorized {
+			if retried {
+				return fmt.Errorf("TeleDrive /api/folders 鉴权失败（401），重新登录后仍然无效")
+			}
+			retried = true
+			d.mu.Lock()
+			d.session = ""
+			d.mu.Unlock()
+			continue
+		}
+		if resp.StatusCode() < 200 || resp.StatusCode() > 299 {
+			return fmt.Errorf("TeleDrive DELETE /api/folders/%s 返回 HTTP %d: %s", id, resp.StatusCode(), resp.String())
+		}
+		return nil
+	}
+}

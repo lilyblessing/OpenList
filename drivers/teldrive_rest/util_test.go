@@ -158,6 +158,10 @@ func (f *fakeTeleDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(File{ID: "file-1", Name: "completed"})
+	case r.URL.Path == "/api/folders" && r.Method == http.MethodGet:
+		// listFolders 走 GET /api/folders?folder_id=xxx
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
 	case r.URL.Path == "/api/folders" && r.Method == http.MethodPost:
 		// 用 map 解码以保留 null 与空串的区别（struct 的 string 字段会把 null 吞成 ""）
 		var body map[string]interface{}

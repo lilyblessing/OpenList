@@ -46,7 +46,9 @@ func (d *TeleDriveREST) Init(ctx context.Context) error {
 		return fmt.Errorf("TeleDrive 管理密码不能为空")
 	}
 	d.client = resty.New().
-		SetRedirectPolicy(resty.NoRedirectPolicy()).
+		SetRedirectPolicy(func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}).
 		SetBaseURL(strings.TrimRight(d.Addition.Address, "/"))
 	// 登录换取会话 Cookie
 	if err := d.ensureCookie(ctx); err != nil {

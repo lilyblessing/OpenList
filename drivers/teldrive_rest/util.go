@@ -19,8 +19,10 @@ func (d *TeleDriveREST) login(ctx context.Context) error {
 		SetHeader("Content-Type", "application/x-www-form-urlencoded").
 		SetFormData(map[string]string{"password": d.Addition.Password}).
 		Post("/login")
-	if err != nil {
-		return fmt.Errorf("TeleDrive 登录请求失败: %w", err)
+	// 只要拿到了响应，就先尝试从 Set-Cookie 里取 token——
+	// 某些 HTTP 客户端在「不跟随重定向」时会同时返回响应与一个非致命 error。
+	if resp == nil {
+		return fmt.Errorf("TeleDrive 登录请求失败（无响应）: %w", err)
 	}
 	token := ""
 	for _, c := range resp.Header().Values("Set-Cookie") {
@@ -32,6 +34,9 @@ func (d *TeleDriveREST) login(ctx context.Context) error {
 		break
 	}
 	if token == "" {
+		if err != nil {
+			return fmt.Errorf("TeleDrive 登录失败：响应中没有 %s Cookie（HTTP %d）: %w，密码错误或 teledrive 版本不兼容", sessionCookieName, resp.StatusCode(), err)
+		}
 		return fmt.Errorf("TeleDrive 登录失败：响应中没有 %s Cookie（HTTP %d），密码错误或 teledrive 版本不兼容", sessionCookieName, resp.StatusCode())
 	}
 	d.mu.Lock()

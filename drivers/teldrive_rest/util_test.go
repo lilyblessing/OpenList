@@ -31,7 +31,14 @@ type fakeTeleDrive struct {
 
 	failChunk    bool   // 置位后，下一个 /api/upload/chunk 请求返回 500（一次性）
 	folderName   string // 最近一次 POST /api/folders 收到的 name
-	folderParent string // 最近一次 POST /api/folders 收到的 parent_id
+	folderParent string // 最近一次 POST /api/folders 收到的 parent_id（null 解码为空串）
+
+	// 原始 JSON 值捕获：用于断言「根目录必须发 null 而不是空串」。
+	// present 表示字段是否出现在请求体里；raw 为该字段的原始解码值（null → nil）。
+	folderParentPresent bool
+	folderParentRaw     interface{}
+	initFolderPresent   bool
+	initFolderRaw       interface{}
 }
 
 func newFakeTeleDrive(t *testing.T, password string, chunkSize int64, totalParts int) (*fakeTeleDrive, *httptest.Server) {
@@ -83,6 +90,13 @@ func (f *fakeTeleDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.initCalls++
+		if v, ok := req["folder_id"]; ok {
+			f.initFolderPresent = true
+			f.initFolderRaw = v
+		} else {
+			f.initFolderPresent = false
+			f.initFolderRaw = nil
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(UploadInitResp{
@@ -126,19 +140,31 @@ func (f *fakeTeleDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(File{ID: "file-1", Name: "completed"})
 	case r.URL.Path == "/api/folders" && r.Method == http.MethodPost:
-		var body struct {
-			Name     string `json:"name"`
-			ParentID string `json:"parent_id"`
-		}
+		// 用 map 解码以保留 null 与空串的区别（struct 的 string 字段会把 null 吞成 ""）
+		var body map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		f.folderName = body.Name
-		f.folderParent = body.ParentID
+		if v, ok := body["name"].(string); ok {
+			f.folderName = v
+		}
+		if v, ok := body["parent_id"]; ok {
+			f.folderParentPresent = true
+			f.folderParentRaw = v
+			if s, ok := v.(string); ok {
+				f.folderParent = s
+			} else {
+				f.folderParent = ""
+			}
+		} else {
+			f.folderParentPresent = false
+			f.folderParentRaw = nil
+			f.folderParent = ""
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(Folder{ID: "folder-1", Name: body.Name})
+		_ = json.NewEncoder(w).Encode(Folder{ID: "folder-1", Name: f.folderName})
 	case r.URL.Path == "/api/files" && r.Method == http.MethodGet:
 		// 空目录时真服务端返回字面量 null（不是 []）
 		w.Header().Set("Content-Type", "application/json")
@@ -323,5 +349,43 @@ func TestListFilesNullBody(t *testing.T) {
 	}
 	if len(files) != 0 {
 		t.Errorf("listFiles 返回 %d 个文件, want 0", len(files))
+	}
+}
+
+// 根目录建目录时 parent_id 必须发 JSON null（字段存在且为 nil），不能是空串——
+// 真服务端 folders.parent_id 有外键约束，空串实测 500 FOREIGN KEY constraint failed。
+func TestCreateFolderAtRootSendsNull(t *testing.T) {
+	f, srv := newFakeTeleDrive(t, "admin123", 4, 1)
+	d := newTestDriver(srv, "admin123")
+	if err := d.createFolder(context.Background(), "根目录", ""); err != nil {
+		t.Fatalf("createFolder 失败: %v", err)
+	}
+	f.mu.Lock()
+	present, raw := f.folderParentPresent, f.folderParentRaw
+	f.mu.Unlock()
+	if !present {
+		t.Fatalf("服务端未收到 parent_id 字段，请求体应包含 \"parent_id\": null")
+	}
+	if raw != nil {
+		t.Errorf("根目录 createFolder 的 parent_id = %v (%T), want nil（JSON null）", raw, raw)
+	}
+}
+
+// 根目录上传初始化时 folder_id 必须发 JSON null（字段存在且为 nil），不能是空串——
+// 真服务端 upload_sessions.folder_id 有外键约束，空串实测 500 FOREIGN KEY constraint failed。
+func TestUploadInitAtRootSendsNull(t *testing.T) {
+	f, srv := newFakeTeleDrive(t, "admin123", 4, 1)
+	d := newTestDriver(srv, "admin123")
+	if _, err := d.uploadInit(context.Background(), "test.bin", 10, "application/octet-stream", ""); err != nil {
+		t.Fatalf("uploadInit 失败: %v", err)
+	}
+	f.mu.Lock()
+	present, raw := f.initFolderPresent, f.initFolderRaw
+	f.mu.Unlock()
+	if !present {
+		t.Fatalf("服务端未收到 folder_id 字段，请求体应包含 \"folder_id\": null")
+	}
+	if raw != nil {
+		t.Errorf("根目录 uploadInit 的 folder_id = %v (%T), want nil（JSON null）", raw, raw)
 	}
 }

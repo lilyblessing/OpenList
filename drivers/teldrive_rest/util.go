@@ -143,6 +143,12 @@ func (d *TeleDriveREST) listFiles(ctx context.Context, folderID string) ([]File,
 // createFolder 建目录。parentID 为空串表示根。
 // 重试策略同 listFolders：401 清会话重登一次后重试，只重试一次。
 func (d *TeleDriveREST) createFolder(ctx context.Context, name, parentID string) error {
+	// folders.parent_id 有外键约束指向 folders(id)，空串不是合法外键值（实测 500），
+	// 根目录必须发 JSON null。map[string]string 表达不了 null，故用 any + nil。
+	var parent any
+	if parentID != "" {
+		parent = parentID
+	}
 	retried := false
 	for {
 		if err := d.ensureCookie(ctx); err != nil {
@@ -155,7 +161,7 @@ func (d *TeleDriveREST) createFolder(ctx context.Context, name, parentID string)
 			SetContext(ctx).
 			SetHeader("Cookie", sessionCookieName+"="+token).
 			SetHeader("Content-Type", "application/json").
-			SetBody(map[string]string{"name": name, "parent_id": parentID}).
+			SetBody(map[string]interface{}{"name": name, "parent_id": parent}).
 			Post("/api/folders")
 		if err != nil {
 			return err
@@ -181,6 +187,12 @@ func (d *TeleDriveREST) createFolder(ctx context.Context, name, parentID string)
 // 注意响应里 ChunkSize 是 HTTP 分块大小（5 MB），TotalParts 是 MTProto 内部分包数，
 // HTTP 分块总数必须用 ceil(size / ChunkSize) 计算，不能用 TotalParts。
 func (d *TeleDriveREST) uploadInit(ctx context.Context, name string, size int64, mimeType, folderID string) (*UploadInitResp, error) {
+	// upload_sessions.folder_id 有外键约束指向 folders(id)，空串不是合法外键值（实测 500），
+	// 根目录必须发 JSON null，故用 any + nil。
+	var folder any
+	if folderID != "" {
+		folder = folderID
+	}
 	retried := false
 	for {
 		if err := d.ensureCookie(ctx); err != nil {
@@ -193,7 +205,7 @@ func (d *TeleDriveREST) uploadInit(ctx context.Context, name string, size int64,
 			SetContext(ctx).
 			SetHeader("Cookie", sessionCookieName+"="+token).
 			SetHeader("Content-Type", "application/json").
-			SetBody(map[string]interface{}{"name": name, "size": size, "mime_type": mimeType, "folder_id": folderID}).
+			SetBody(map[string]interface{}{"name": name, "size": size, "mime_type": mimeType, "folder_id": folder}).
 			Post("/api/upload/init")
 		if err != nil {
 			return nil, err

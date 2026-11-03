@@ -46,9 +46,11 @@ func (d *TeleDriveREST) Init(ctx context.Context) error {
 		return fmt.Errorf("TeleDrive 管理密码不能为空")
 	}
 	d.client = resty.New().
-		SetRedirectPolicy(func(req *http.Request, via []*http.Request) error {
+		SetRedirectPolicy(resty.RedirectPolicyFunc(func(req *http.Request, via []*http.Request) error {
+			// 不跟随重定向，但把 303 响应原样交回，且不产生 error。
+			// teledrive 登录成功时返回 303 + Set-Cookie，必须读到这个响应头。
 			return http.ErrUseLastResponse
-		}).
+		})).
 		SetBaseURL(strings.TrimRight(d.Addition.Address, "/"))
 	// 登录换取会话 Cookie
 	if err := d.ensureCookie(ctx); err != nil {

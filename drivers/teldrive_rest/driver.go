@@ -11,6 +11,7 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	"github.com/go-resty/resty/v2"
 )
 
@@ -53,6 +54,8 @@ func (d *TeleDriveREST) Init(ctx context.Context) error {
 			return http.ErrUseLastResponse
 		})).
 		SetBaseURL(strings.TrimRight(d.Addition.Address, "/"))
+	// 说明：不设置 resty 全局 Timeout —— 上传大文件耗时会远超任何固定值，
+	// 改为依赖各请求通过 SetContext 透传的 ctx 控制超时与取消（resty 默认 Timeout=0 即不限时）。
 	// 登录换取会话 Cookie
 	if err := d.ensureCookie(ctx); err != nil {
 		return err
@@ -167,6 +170,9 @@ func (d *TeleDriveREST) Put(ctx context.Context, dstDir model.Obj, stream model.
 			if err := d.deleteFile(ctx, f.ID); err != nil {
 				return err
 			}
+		}
+		if len(old) > 0 {
+			utils.Log.Warnf("覆盖上传：已软删 %d 个同名旧文件", len(old))
 		}
 	}
 

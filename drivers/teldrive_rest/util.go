@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 )
 
 const sessionCookieName = "teledrive_session"
@@ -44,6 +46,7 @@ func (d *TeleDriveREST) login(ctx context.Context) error {
 	d.mu.Lock()
 	d.session = token
 	d.mu.Unlock()
+	utils.Log.Debugf("TeleDrive 登录成功，会话已更新")
 	return nil
 }
 
@@ -55,6 +58,7 @@ func (d *TeleDriveREST) ensureCookie(ctx context.Context) error {
 	if token != "" {
 		return nil
 	}
+	utils.Log.Debugf("TeleDrive 会话失效或缺失，尝试重新登录")
 	return d.login(ctx)
 }
 
@@ -79,6 +83,7 @@ func (d *TeleDriveREST) listFolders(ctx context.Context, folderID string) ([]Fol
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return nil, fmt.Errorf("TeleDrive /api/folders 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true
@@ -120,6 +125,7 @@ func (d *TeleDriveREST) listFiles(ctx context.Context, folderID string) ([]File,
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return nil, fmt.Errorf("TeleDrive /api/files 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true
@@ -168,6 +174,7 @@ func (d *TeleDriveREST) createFolder(ctx context.Context, name, parentID string)
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return fmt.Errorf("TeleDrive /api/folders 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true
@@ -212,6 +219,7 @@ func (d *TeleDriveREST) uploadInit(ctx context.Context, name string, size int64,
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return nil, fmt.Errorf("TeleDrive /api/upload/init 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true
@@ -257,6 +265,7 @@ func (d *TeleDriveREST) uploadChunk(ctx context.Context, sessionID string, chunk
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return fmt.Errorf("TeleDrive /api/upload/chunk 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true
@@ -293,6 +302,7 @@ func (d *TeleDriveREST) uploadComplete(ctx context.Context, sessionID string) (*
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return nil, fmt.Errorf("TeleDrive /api/upload/complete 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true
@@ -331,6 +341,7 @@ func (d *TeleDriveREST) deleteFile(ctx context.Context, id string) error {
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return fmt.Errorf("TeleDrive /api/files 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true
@@ -396,6 +407,7 @@ func (d *TeleDriveREST) renameFile(ctx context.Context, id, newName string) erro
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return fmt.Errorf("TeleDrive /api/files 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true
@@ -436,6 +448,7 @@ func (d *TeleDriveREST) renameFolder(ctx context.Context, id, newName string) er
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return fmt.Errorf("TeleDrive /api/folders 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true
@@ -477,6 +490,7 @@ func (d *TeleDriveREST) moveFile(ctx context.Context, id, dstFolderID string) er
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return fmt.Errorf("TeleDrive /api/files 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true
@@ -519,6 +533,7 @@ func (d *TeleDriveREST) moveFolder(ctx context.Context, id, dstParentID string) 
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return fmt.Errorf("TeleDrive /api/folders 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true
@@ -568,6 +583,7 @@ func (d *TeleDriveREST) batchMove(ctx context.Context, fileIDs, folderIDs []stri
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return fmt.Errorf("TeleDrive /api/batch/move 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true
@@ -603,6 +619,7 @@ func (d *TeleDriveREST) deleteFolder(ctx context.Context, id string) error {
 		}
 		if resp.StatusCode() == http.StatusUnauthorized {
 			if retried {
+				utils.Log.Warnf("TeleDrive 鉴权失败且重登无效")
 				return fmt.Errorf("TeleDrive /api/folders 鉴权失败（401），重新登录后仍然无效")
 			}
 			retried = true

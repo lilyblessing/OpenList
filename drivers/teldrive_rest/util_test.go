@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-resty/resty/v2"
 )
@@ -39,15 +40,26 @@ type fakeTeleDrive struct {
 	folderParentRaw     interface{}
 	initFolderPresent   bool
 	initFolderRaw       interface{}
+
+	// —— 401 重登 / rename / move / batchMove 用例新增 ——
+	loginCalls   int    // 收到的 POST /login 请求总数
+	sessionToken string // 当前有效会话 token；携带不匹配 token 的 /api/* 请求视为会话失效（401）
+	force401     bool   // 置位后所有 /api/* 一律 401（重登也不放行），用于验证「只重试一次」
+
+	// 最近一次 rename/move/batchMove 类 JSON 请求的捕获（方法、路径、解码后的请求体）
+	lastMethod string
+	lastPath   string
+	lastBody   map[string]interface{}
 }
 
 func newFakeTeleDrive(t *testing.T, password string, chunkSize int64, totalParts int) (*fakeTeleDrive, *httptest.Server) {
 	f := &fakeTeleDrive{
-		t:          t,
-		password:   password,
-		chunkSize:  chunkSize,
-		totalParts: totalParts,
-		chunks:     make(map[int][]byte),
+		t:            t,
+		password:     password,
+		chunkSize:    chunkSize,
+		totalParts:   totalParts,
+		chunks:       make(map[int][]byte),
+		sessionToken: "faketoken",
 	}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
@@ -59,12 +71,13 @@ func (f *fakeTeleDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 
 	if r.URL.Path == "/login" {
+		f.loginCalls++
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "bad form: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		if r.FormValue("password") == f.password {
-			w.Header().Add("Set-Cookie", sessionCookieName+"=faketoken; Path=/")
+			w.Header().Add("Set-Cookie", sessionCookieName+"="+f.sessionToken+"; Path=/")
 			w.WriteHeader(http.StatusSeeOther)
 			return
 		}
@@ -77,7 +90,13 @@ func (f *fakeTeleDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, err := r.Cookie(sessionCookieName); err != nil {
+	if f.force401 {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	// 会话校验：不仅要带 Cookie，token 还必须与服务端当前有效 token 一致，
+	// 否则视为会话失效返回 401（TestEnsureCookieReloginOn401 靠换 token 模拟失效）。
+	if c, err := r.Cookie(sessionCookieName); err != nil || c.Value != f.sessionToken {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -170,6 +189,25 @@ func (f *fakeTeleDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("null"))
+	case strings.HasPrefix(r.URL.Path, "/api/files/") && r.Method == http.MethodPut:
+		// renameFile / moveFile 共用 PUT /api/files/{id}
+		if !f.captureJSON(w, r) {
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case strings.HasPrefix(r.URL.Path, "/api/folders/") && r.Method == http.MethodPut:
+		// renameFolder / moveFolder 共用 PUT /api/folders/{id}
+		if !f.captureJSON(w, r) {
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case r.URL.Path == "/api/batch/move" && r.Method == http.MethodPost:
+		if !f.captureJSON(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{})
 	case strings.HasPrefix(r.URL.Path, "/api/files/") && r.Method == http.MethodDelete:
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -206,6 +244,39 @@ func (f *fakeTeleDrive) snapshot() (chunks map[int][]byte, chunkCalls int) {
 		cp[k] = v
 	}
 	return cp, f.chunkCalls
+}
+
+// captureJSON 读取并解码 JSON 请求体到 lastBody，供 rename/move/batchMove 用例断言。
+// 返回 false 表示已写出错误响应，handler 应直接 return。
+// 仅在 ServeHTTP（已持 f.mu）内调用。
+func (f *fakeTeleDrive) captureJSON(w http.ResponseWriter, r *http.Request) bool {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return false
+	}
+	f.lastMethod = r.Method
+	f.lastPath = r.URL.Path
+	f.lastBody = m
+	return true
+}
+
+// lastRequest 返回最近一次捕获的 JSON 请求（方法、路径、请求体）。
+func (f *fakeTeleDrive) lastRequest() (method, path string, body map[string]interface{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastMethod, f.lastPath, f.lastBody
+}
+
+func (f *fakeTeleDrive) loginCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.loginCalls
 }
 
 func TestChunkCount(t *testing.T) {
@@ -387,5 +458,163 @@ func TestUploadInitAtRootSendsNull(t *testing.T) {
 	}
 	if raw != nil {
 		t.Errorf("根目录 uploadInit 的 folder_id = %v (%T), want nil（JSON null）", raw, raw)
+	}
+}
+
+// 会话失效后驱动应自动重登一次并成功：先把服务端有效 token 换掉（旧 token 一律 401），
+// 再调 listFolders，断言调用成功且 /login 被请求了至少两次（首次 + 自动重登）。
+func TestEnsureCookieReloginOn401(t *testing.T) {
+	f, srv := newFakeTeleDrive(t, "admin123", 4, 1)
+	d := newTestDriver(srv, "admin123")
+	ctx := context.Background()
+
+	if err := d.login(ctx); err != nil {
+		t.Fatalf("首次登录失败: %v", err)
+	}
+
+	// 模拟服务端会话失效：换发新 token，旧 token（faketoken）从此 401
+	f.mu.Lock()
+	f.sessionToken = "rotated-token"
+	f.mu.Unlock()
+
+	folders, err := d.listFolders(ctx, "")
+	if err != nil {
+		t.Fatalf("旧 token 401 后 listFolders 应自动重登成功: %v", err)
+	}
+	if len(folders) != 0 {
+		t.Errorf("listFolders 返回 %d 个目录, want 0", len(folders))
+	}
+	if calls := f.loginCallCount(); calls < 2 {
+		t.Errorf("loginCalls = %d, want >= 2（应包含 401 后的自动重登）", calls)
+	}
+}
+
+// 重登一次后仍 401 则必须放弃返回 error，不能无限重试。
+// 用 context.WithTimeout 兜底：若实现变成死循环，测试在 5 秒后因 ctx 超时报错，
+// 而不是挂住整个 CI。
+func TestEnsureCookieRetryOnlyOnce(t *testing.T) {
+	f, srv := newFakeTeleDrive(t, "admin123", 4, 1)
+	d := newTestDriver(srv, "admin123")
+	f.mu.Lock()
+	f.force401 = true
+	f.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := d.listFolders(ctx, ""); err == nil {
+		t.Fatalf("重登后仍 401 时 listFolders 应返回 error，实际 nil")
+	}
+	if calls := f.loginCallCount(); calls > 2 {
+		t.Errorf("loginCalls = %d, want <= 2（首次登录 + 重登一次，不允许无限重试）", calls)
+	}
+}
+
+// 改文件名：必须发出 PUT /api/files/{id} 且 body.name 正确；
+// 空名字驱动侧应主动拒绝（服务端会静默忽略空名），且不发任何请求。
+func TestRenameFile(t *testing.T) {
+	f, srv := newFakeTeleDrive(t, "admin123", 4, 1)
+	d := newTestDriver(srv, "admin123")
+	ctx := context.Background()
+
+	if err := d.renameFile(ctx, "file-9", "新名字.bin"); err != nil {
+		t.Fatalf("renameFile 失败: %v", err)
+	}
+	method, path, body := f.lastRequest()
+	if method != http.MethodPut || path != "/api/files/file-9" {
+		t.Errorf("请求 %s %s, want PUT /api/files/file-9", method, path)
+	}
+	if got, _ := body["name"].(string); got != "新名字.bin" {
+		t.Errorf("body.name = %q, want %q", got, "新名字.bin")
+	}
+
+	// 空名字：返回 error，且 lastRequest 不变（没有发出新请求）
+	if err := d.renameFile(ctx, "file-9", ""); err == nil {
+		t.Fatalf("空名字 renameFile 应返回 error，实际 nil")
+	}
+	m2, p2, b2 := f.lastRequest()
+	if m2 != method || p2 != path || b2["name"] != "新名字.bin" {
+		t.Errorf("空名字请求不应发出，lastRequest 变为 %s %s %v", m2, p2, b2)
+	}
+}
+
+// 改目录名：必须发出 PUT /api/folders/{id} 且 body.name 正确；空名字驱动侧拒绝。
+func TestRenameFolder(t *testing.T) {
+	f, srv := newFakeTeleDrive(t, "admin123", 4, 1)
+	d := newTestDriver(srv, "admin123")
+	ctx := context.Background()
+
+	if err := d.renameFolder(ctx, "folder-7", "新目录名"); err != nil {
+		t.Fatalf("renameFolder 失败: %v", err)
+	}
+	method, path, body := f.lastRequest()
+	if method != http.MethodPut || path != "/api/folders/folder-7" {
+		t.Errorf("请求 %s %s, want PUT /api/folders/folder-7", method, path)
+	}
+	if got, _ := body["name"].(string); got != "新目录名" {
+		t.Errorf("body.name = %q, want %q", got, "新目录名")
+	}
+
+	if err := d.renameFolder(ctx, "folder-7", ""); err == nil {
+		t.Fatalf("空名字 renameFolder 应返回 error，实际 nil")
+	}
+	m2, p2, b2 := f.lastRequest()
+	if m2 != method || p2 != path || b2["name"] != "新目录名" {
+		t.Errorf("空名字请求不应发出，lastRequest 变为 %s %s %v", m2, p2, b2)
+	}
+}
+
+// 非根移动文件：必须发出 PUT /api/files/{id} 且 body.folder_id 为目标 ID 字符串；
+// 空 dstFolderID 应返回 error（约定：移到根必须走 batchMove），且不发请求。
+func TestMoveFileNonRoot(t *testing.T) {
+	f, srv := newFakeTeleDrive(t, "admin123", 4, 1)
+	d := newTestDriver(srv, "admin123")
+	ctx := context.Background()
+
+	if err := d.moveFile(ctx, "file-9", "folder-dst"); err != nil {
+		t.Fatalf("moveFile 失败: %v", err)
+	}
+	method, path, body := f.lastRequest()
+	if method != http.MethodPut || path != "/api/files/file-9" {
+		t.Errorf("请求 %s %s, want PUT /api/files/file-9", method, path)
+	}
+	if got, _ := body["folder_id"].(string); got != "folder-dst" {
+		t.Errorf("body.folder_id = %q, want %q", got, "folder-dst")
+	}
+
+	if err := d.moveFile(ctx, "file-9", ""); err == nil {
+		t.Fatalf("空 dstFolderID 的 moveFile 应返回 error，实际 nil")
+	}
+	m2, p2, b2 := f.lastRequest()
+	if m2 != method || p2 != path || b2["folder_id"] != "folder-dst" {
+		t.Errorf("空 dstFolderID 请求不应发出，lastRequest 变为 %s %s %v", m2, p2, b2)
+	}
+}
+
+// 移到根：POST /api/batch/move 的 body 里 target_folder_id 必须存在且为 JSON null
+// （不是空串——服务端 folder_id 是 *string，null 才表示根），且 file_ids / folder_ids 存在。
+func TestBatchMoveToRootSendsNull(t *testing.T) {
+	f, srv := newFakeTeleDrive(t, "admin123", 4, 1)
+	d := newTestDriver(srv, "admin123")
+
+	if err := d.batchMove(context.Background(), []string{"file-1"}, []string{"folder-1"}, ""); err != nil {
+		t.Fatalf("batchMove 失败: %v", err)
+	}
+	method, path, body := f.lastRequest()
+	if method != http.MethodPost || path != "/api/batch/move" {
+		t.Fatalf("请求 %s %s, want POST /api/batch/move", method, path)
+	}
+	raw, present := body["target_folder_id"]
+	if !present {
+		t.Fatalf("请求体缺少 target_folder_id 字段，应包含 \"target_folder_id\": null")
+	}
+	if raw != nil {
+		t.Errorf("移到根的 target_folder_id = %v (%T), want nil（JSON null，不是空串）", raw, raw)
+	}
+	if _, ok := body["file_ids"]; !ok {
+		t.Errorf("请求体缺少 file_ids 字段")
+	}
+	if _, ok := body["folder_ids"]; !ok {
+		t.Errorf("请求体缺少 folder_ids 字段")
 	}
 }
